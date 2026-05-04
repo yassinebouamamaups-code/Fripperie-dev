@@ -26,9 +26,15 @@
     let stripeMountingSignature = "";
     let stripeAutofillCheckTimer = 0;
     let checkoutShippingRequestId = 0;
+    let sendcloudServicePointSdkPromise = null;
     let checkoutShippingState = {
         options: [],
         selectedOptionId: "",
+        servicePointPicker: {
+            enabled: false,
+            publicKey: ""
+        },
+        servicePointSelections: {},
         loading: false,
         error: ""
     };
@@ -750,6 +756,7 @@
         checkoutElements.form.addEventListener("change", handleCheckoutFormChange);
         checkoutElements.form.addEventListener("input", handleCheckoutFormChange);
         checkoutElements.form.addEventListener("focusout", handleCheckoutFormChange);
+        checkoutElements.form.addEventListener("click", handleCheckoutFormClick);
         checkoutElements.form.addEventListener("submit", handleCheckoutSubmit);
 
     }
@@ -778,6 +785,11 @@
         checkoutShippingState = {
             options: [],
             selectedOptionId: "",
+            servicePointPicker: {
+                enabled: false,
+                publicKey: ""
+            },
+            servicePointSelections: {},
             loading: false,
             error: ""
         };
@@ -832,6 +844,10 @@
             }
 
             checkoutShippingState.options = Array.isArray(payload.options) ? payload.options : [];
+            checkoutShippingState.servicePointPicker = {
+                enabled: Boolean(payload?.servicePointPicker?.enabled),
+                publicKey: clean(payload?.servicePointPicker?.publicKey)
+            };
             if (!checkoutShippingState.options.length) {
                 throw new Error("Aucun mode de livraison disponible pour cette adresse.");
             }
@@ -840,6 +856,11 @@
             if (!stillExists) {
                 checkoutShippingState.selectedOptionId = checkoutShippingState.options[0].id;
             }
+            checkoutShippingState.servicePointSelections = Object.fromEntries(
+                Object.entries(checkoutShippingState.servicePointSelections).filter(([optionId]) => (
+                    checkoutShippingState.options.some((option) => option.id === optionId)
+                ))
+            );
             if (checkoutElements.feedback.textContent === "Choisissez un mode de livraison.") {
                 checkoutElements.feedback.textContent = "";
             }
@@ -897,6 +918,7 @@
                         <strong>${escapeHtml(option.label)}</strong>
                         ${option.description ? `<small>${escapeHtml(option.description)}</small>` : ""}
                         ${option.estimatedLabel ? `<small>${escapeHtml(option.estimatedLabel)}</small>` : ""}
+                        ${option.requiresServicePoint ? renderServicePointSelectionMarkup(option) : ""}
                     </span>
                     <span class="shipping-option__price">${option.shippingAmount <= 0 ? "Offerte" : escapeHtml(formatPrice(option.shippingAmount))}</span>
                 </span>
@@ -913,6 +935,50 @@
     function getSelectedShippingOption() {
         const selectedId = getSelectedShippingOptionId();
         return checkoutShippingState.options.find((option) => option.id === selectedId) || null;
+    }
+
+    function getSelectedServicePoint(optionId = getSelectedShippingOptionId()) {
+        return checkoutShippingState.servicePointSelections[clean(optionId)] || null;
+    }
+
+    function renderServicePointSelectionMarkup(option) {
+        const selectedServicePoint = getSelectedServicePoint(option.id);
+        const isSelectedOption = option.id === getSelectedShippingOptionId();
+        const pickerUnavailable = !checkoutShippingState.servicePointPicker.enabled || !checkoutShippingState.servicePointPicker.publicKey;
+        const actionLabel = selectedServicePoint ? "Changer le point relais" : "Choisir un point relais";
+
+        return `
+            <span class="shipping-option__relay${isSelectedOption ? " shipping-option__relay--active" : ""}">
+                ${selectedServicePoint ? `
+                    <span class="shipping-option__relay-summary">
+                        <strong>${escapeHtml(selectedServicePoint.name || "Point relais selectionne")}</strong>
+                        <small>${escapeHtml(formatServicePointAddress(selectedServicePoint))}</small>
+                    </span>
+                ` : `
+                    <span class="shipping-option__relay-summary">
+                        <strong>Aucun point relais choisi</strong>
+                        <small>Sélectionnez un point de retrait avant de payer.</small>
+                    </span>
+                `}
+                <span class="shipping-option__relay-actions">
+                    <button
+                        type="button"
+                        class="shipping-option__relay-button"
+                        data-open-service-point-picker
+                        data-shipping-option-id="${escapeAttribute(option.id)}"
+                        ${pickerUnavailable ? "disabled" : ""}
+                    >${escapeHtml(actionLabel)}</button>
+                    ${pickerUnavailable ? `<small>Le sélecteur Sendcloud n'est pas encore configuré.</small>` : ""}
+                </span>
+            </span>
+        `;
+    }
+
+    function formatServicePointAddress(servicePoint) {
+        return [
+            [clean(servicePoint.street), clean(servicePoint.houseNumber)].filter(Boolean).join(" ").trim(),
+            [clean(servicePoint.postalCode), clean(servicePoint.city)].filter(Boolean).join(" ").trim()
+        ].filter(Boolean).join(", ");
     }
 
     function handleCheckoutFormChange(event) {
@@ -943,6 +1009,30 @@
         }
     }
 
+    function handleCheckoutFormClick(event) {
+        const trigger = event.target.closest("[data-open-service-point-picker]");
+        if (!trigger) {
+            return;
+        }
+
+        event.preventDefault();
+        const optionId = clean(trigger.dataset.shippingOptionId);
+        if (!optionId) {
+            return;
+        }
+
+        const optionInput = checkoutElements?.form?.querySelector(`input[name='shippingOption'][value="${CSS.escape(optionId)}"]`);
+        if (optionInput instanceof HTMLInputElement) {
+            optionInput.checked = true;
+            checkoutShippingState.selectedOptionId = optionId;
+        }
+
+        checkoutElements.feedback.textContent = "";
+        renderCheckoutSummary(loadCart());
+        syncCheckoutPaymentUi();
+        void openSelectedServicePointPicker(optionId);
+    }
+
     function getSelectedPaymentMethodId() {
         return checkoutElements?.form?.querySelector("input[name='paymentMethod']:checked")?.value || "";
     }
@@ -958,7 +1048,7 @@
         const isStripe = method?.id === "stripe";
         const isPayPal = method?.id === "paypal";
         const customerReady = hasValidCheckoutCustomerDetails();
-        const shippingReady = Boolean(getSelectedShippingOptionId()) && !checkoutShippingState.loading && !checkoutShippingState.error;
+        const shippingReady = isShippingSelectionComplete();
         const shouldShowStripePanel = customerReady && isStripe;
         checkoutElements.paymentMethods.querySelectorAll(".payment-method").forEach((card) => {
             const input = card.querySelector("input[name='paymentMethod']");
@@ -994,13 +1084,43 @@
         if (!stripeCheckoutState?.actions) {
             setCheckoutSubmitLabel("Payer avec Stripe");
             checkoutElements.submitButton.disabled = !shippingReady;
-            checkoutElements.stripeNote.textContent = shippingReady ? "" : "Choisissez d'abord un mode de livraison.";
+            checkoutElements.stripeNote.textContent = shippingReady ? "" : checkoutReadinessMessage();
             return;
         }
 
         setCheckoutSubmitLabel("Payer avec Stripe");
         checkoutElements.submitButton.disabled = !shippingReady || stripeCheckoutState.canConfirm === false;
         checkoutElements.stripeNote.textContent = "";
+    }
+
+    function checkoutReadinessMessage() {
+        const selectedOption = getSelectedShippingOption();
+        if (!selectedOption) {
+            return "Choisissez d'abord un mode de livraison.";
+        }
+
+        if (selectedOption.requiresServicePoint && !getSelectedServicePoint(selectedOption.id)) {
+            return "Choisissez d'abord votre point relais.";
+        }
+
+        if (checkoutShippingState.loading) {
+            return "Les modes de livraison sont en cours de mise a jour.";
+        }
+
+        return "";
+    }
+
+    function isShippingSelectionComplete() {
+        const selectedOption = getSelectedShippingOption();
+        if (!selectedOption || checkoutShippingState.loading || checkoutShippingState.error) {
+            return false;
+        }
+
+        if (selectedOption.requiresServicePoint) {
+            return Boolean(getSelectedServicePoint(selectedOption.id));
+        }
+
+        return true;
     }
 
     function setCheckoutSubmitLabel(label) {
@@ -1078,6 +1198,125 @@
             country: "FR",
             customerNote: includeNote ? clean(formData.get("customerNote")) : ""
         };
+    }
+
+    function sendcloudPickerLanguage() {
+        return document.documentElement.lang?.toLowerCase().startsWith("fr") ? "fr-fr" : "en-us";
+    }
+
+    function loadSendcloudServicePointSdk() {
+        if (window.sendcloud?.servicePoints?.open) {
+            return Promise.resolve(window.sendcloud);
+        }
+
+        if (sendcloudServicePointSdkPromise) {
+            return sendcloudServicePointSdkPromise;
+        }
+
+        sendcloudServicePointSdkPromise = new Promise((resolve, reject) => {
+            const existing = document.querySelector("script[data-sendcloud-spp]");
+            if (existing) {
+                existing.addEventListener("load", () => resolve(window.sendcloud), { once: true });
+                existing.addEventListener("error", () => reject(new Error("Impossible de charger le sélecteur de points relais Sendcloud.")), { once: true });
+                return;
+            }
+
+            const script = document.createElement("script");
+            script.src = "https://embed.sendcloud.sc/spp/1.0.0/api.min.js";
+            script.async = true;
+            script.dataset.sendcloudSpp = "true";
+            script.addEventListener("load", () => resolve(window.sendcloud), { once: true });
+            script.addEventListener("error", () => reject(new Error("Impossible de charger le sélecteur de points relais Sendcloud.")), { once: true });
+            document.head.appendChild(script);
+        });
+
+        return sendcloudServicePointSdkPromise;
+    }
+
+    function normalizeServicePointSelection(servicePoint, postNumber = "") {
+        const servicePointId = Number.parseInt(clean(servicePoint?.service_point_id ?? servicePoint?.id), 10);
+        if (!Number.isFinite(servicePointId) || servicePointId <= 0) {
+            return null;
+        }
+
+        return {
+            servicePointId,
+            postNumber: clean(postNumber || servicePoint?.post_number),
+            carrier: clean(servicePoint?.carrier),
+            name: clean(servicePoint?.name),
+            street: clean(servicePoint?.street),
+            houseNumber: clean(servicePoint?.house_number ?? servicePoint?.houseNumber),
+            postalCode: clean(servicePoint?.postal_code ?? servicePoint?.postalCode),
+            city: clean(servicePoint?.city),
+            country: clean(servicePoint?.country || "FR").toUpperCase()
+        };
+    }
+
+    async function openSelectedServicePointPicker(optionId) {
+        const option = checkoutShippingState.options.find((entry) => entry.id === clean(optionId));
+        if (!option?.requiresServicePoint) {
+            return;
+        }
+
+        if (!checkoutShippingState.servicePointPicker.enabled || !checkoutShippingState.servicePointPicker.publicKey) {
+            checkoutElements.feedback.textContent = "Le sélecteur de points relais Sendcloud n'est pas encore configuré.";
+            return;
+        }
+
+        const customer = collectCheckoutCustomer(false);
+        if (!customer.postalCode || !customer.city) {
+            checkoutElements.feedback.textContent = "Renseignez au moins le code postal et la ville avant de choisir un point relais.";
+            return;
+        }
+
+        checkoutElements.feedback.textContent = "Ouverture du sélecteur de points relais...";
+
+        try {
+            await loadSendcloudServicePointSdk();
+            const existingSelection = getSelectedServicePoint(option.id);
+            const pickerConfig = {
+                apiKey: checkoutShippingState.servicePointPicker.publicKey,
+                country: clean(customer.country || "FR").toLowerCase(),
+                language: sendcloudPickerLanguage(),
+                postalCode: customer.postalCode,
+                city: customer.city,
+                carriers: Array.isArray(option.pickerCarriers) ? option.pickerCarriers.join(",") : "",
+                servicePointId: existingSelection?.servicePointId || undefined,
+                postNumber: existingSelection?.postNumber || undefined
+            };
+
+            await new Promise((resolve, reject) => {
+                window.sendcloud.servicePoints.open(
+                    pickerConfig,
+                    (servicePoint, postNumber) => {
+                        const normalized = normalizeServicePointSelection(servicePoint, postNumber);
+                        if (!normalized) {
+                            reject(new Error("Le point relais selectionne est invalide."));
+                            return;
+                        }
+                        checkoutShippingState.servicePointSelections[option.id] = normalized;
+                        resolve(normalized);
+                    },
+                    (errors) => {
+                        if (Array.isArray(errors) && errors.length) {
+                            reject(new Error(errors.join(" ")));
+                            return;
+                        }
+                        reject(new Error("Le sélecteur de points relais a été fermé."));
+                    }
+                );
+            });
+
+            checkoutElements.feedback.textContent = "";
+            renderShippingOptions();
+            renderCheckoutSummary(loadCart());
+            syncCheckoutPaymentUi();
+            if (getSelectedPaymentMethodId() === "stripe") {
+                scheduleStripeAutofillCheck(20);
+            }
+        } catch (error) {
+            checkoutElements.feedback.textContent = error.message || "Impossible d'ouvrir le sélecteur de points relais.";
+        }
     }
 
     function resetStripeCheckoutState() {
@@ -1312,7 +1551,8 @@
         const items = loadCart();
         const customer = collectCheckoutCustomer();
         const shippingOptionId = getSelectedShippingOptionId();
-        if (!items.length || !hasCompleteCheckoutCustomer(customer) || !shippingOptionId || checkoutShippingState.loading) {
+        const selectedServicePoint = getSelectedServicePoint(shippingOptionId);
+        if (!items.length || !hasCompleteCheckoutCustomer(customer) || !shippingOptionId || !isShippingSelectionComplete()) {
             checkoutElements.stripeNote.textContent = "";
             return;
         }
@@ -1330,7 +1570,7 @@
         checkoutElements.feedback.textContent = "Chargement des moyens de paiement Stripe...";
 
         try {
-            const remoteSession = await createStripeBackendSession(items, customer, shippingOptionId);
+            const remoteSession = await createStripeBackendSession(items, customer, shippingOptionId, selectedServicePoint);
             const pendingSession = {
                 orderNumber: remoteSession.orderNumber,
                 invoiceNumber: remoteSession.invoiceNumber,
@@ -1534,6 +1774,12 @@
             checkoutElements.feedback.textContent = "Choisissez un mode de livraison.";
             return;
         }
+        if (!isShippingSelectionComplete()) {
+            checkoutElements.feedback.textContent = checkoutReadinessMessage() || "Choisissez un point relais.";
+            return;
+        }
+
+        const selectedServicePoint = getSelectedServicePoint(selectedShippingOptionId);
 
         if (paymentMethod.id === "paypal" && shopConfig.backend.baseUrl) {
             const submitButton = checkoutElements.form.querySelector("[type='submit']");
@@ -1541,7 +1787,7 @@
             submitButton.disabled = true;
 
             try {
-                const remoteOrder = await createPayPalBackendOrder(items, customer, selectedShippingOptionId);
+                const remoteOrder = await createPayPalBackendOrder(items, customer, selectedShippingOptionId, selectedServicePoint);
                 const pendingOrder = {
                     orderNumber: remoteOrder.orderNumber,
                     invoiceNumber: remoteOrder.invoiceNumber,
@@ -1573,7 +1819,7 @@
                     resetStripeCheckoutState();
                     checkoutElements.feedback.textContent = "Pr\u00e9paration du paiement Stripe...";
 
-                    const remoteSession = await createStripeBackendSession(items, customer, selectedShippingOptionId);
+                    const remoteSession = await createStripeBackendSession(items, customer, selectedShippingOptionId, selectedServicePoint);
                     const pendingSession = {
                         orderNumber: remoteSession.orderNumber,
                         invoiceNumber: remoteSession.invoiceNumber,
@@ -1652,7 +1898,7 @@
         closeCart();
     }
 
-    async function createPayPalBackendOrder(items, customer, shippingOptionId) {
+    async function createPayPalBackendOrder(items, customer, shippingOptionId, servicePoint) {
         const response = await fetch(`${shopConfig.backend.baseUrl}/api/checkout/paypal/order`, {
             method: "POST",
             headers: {
@@ -1671,7 +1917,8 @@
                 })),
                 customer,
                 shipping: {
-                    optionId: shippingOptionId
+                    optionId: shippingOptionId,
+                    servicePoint
                 }
             })
         });
@@ -1684,7 +1931,7 @@
         return payload;
     }
 
-    async function createStripeBackendSession(items, customer, shippingOptionId) {
+    async function createStripeBackendSession(items, customer, shippingOptionId, servicePoint) {
         const response = await fetch(`${shopConfig.backend.baseUrl}/api/checkout/stripe/session`, {
             method: "POST",
             headers: {
@@ -1703,7 +1950,8 @@
                 })),
                 customer,
                 shipping: {
-                    optionId: shippingOptionId
+                    optionId: shippingOptionId,
+                    servicePoint
                 }
             })
         });
