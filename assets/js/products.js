@@ -876,7 +876,7 @@
 
         if (checkoutShippingState.loading) {
             checkoutElements.shippingFeedback.textContent = checkoutShippingState.options.length
-                ? "Mise a jour des modes de livraison..."
+                ? ""
                 : "Chargement des modes de livraison...";
             return;
         }
