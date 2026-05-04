@@ -840,6 +840,9 @@
             if (!stillExists) {
                 checkoutShippingState.selectedOptionId = checkoutShippingState.options[0].id;
             }
+            if (checkoutElements.feedback.textContent === "Choisissez un mode de livraison.") {
+                checkoutElements.feedback.textContent = "";
+            }
         } catch (error) {
             if (requestId !== checkoutShippingRequestId) {
                 return;
@@ -854,6 +857,10 @@
             checkoutShippingState.loading = false;
             renderShippingOptions();
             renderCheckoutSummary(items);
+            syncCheckoutPaymentUi();
+            if (getSelectedPaymentMethodId() === "stripe" && hasValidCheckoutCustomerDetails() && getSelectedShippingOptionId()) {
+                scheduleStripeAutofillCheck(20);
+            }
         }
     }
 
@@ -915,10 +922,19 @@
 
         if (event.target instanceof HTMLInputElement && event.target.name === "shippingOption") {
             checkoutShippingState.selectedOptionId = clean(event.target.value);
+            checkoutElements.feedback.textContent = "";
             renderCheckoutSummary(loadCart());
+            syncCheckoutPaymentUi();
+            if (getSelectedPaymentMethodId() === "stripe") {
+                scheduleStripeAutofillCheck();
+            }
+            return;
         }
 
-        if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+        if (
+            (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)
+            && !(event.target instanceof HTMLInputElement && event.target.name === "paymentMethod")
+        ) {
             scheduleCheckoutShippingRefresh();
         }
 
@@ -942,6 +958,7 @@
         const isStripe = method?.id === "stripe";
         const isPayPal = method?.id === "paypal";
         const customerReady = hasValidCheckoutCustomerDetails();
+        const shippingReady = Boolean(getSelectedShippingOptionId()) && !checkoutShippingState.loading && !checkoutShippingState.error;
         const shouldShowStripePanel = customerReady && isStripe;
         checkoutElements.paymentMethods.querySelectorAll(".payment-method").forEach((card) => {
             const input = card.querySelector("input[name='paymentMethod']");
@@ -962,27 +979,27 @@
 
         if (isPayPal) {
             setCheckoutSubmitLabel("Payer avec PayPal");
-            checkoutElements.submitButton.disabled = false;
+            checkoutElements.submitButton.disabled = !shippingReady;
             checkoutElements.stripeNote.textContent = "";
             return;
         }
 
         if (!isStripe) {
             setCheckoutSubmitLabel("Valider et payer");
-            checkoutElements.submitButton.disabled = false;
+            checkoutElements.submitButton.disabled = !shippingReady;
             checkoutElements.stripeNote.textContent = "";
             return;
         }
 
         if (!stripeCheckoutState?.actions) {
             setCheckoutSubmitLabel("Payer avec Stripe");
-            checkoutElements.submitButton.disabled = false;
-            checkoutElements.stripeNote.textContent = "";
+            checkoutElements.submitButton.disabled = !shippingReady;
+            checkoutElements.stripeNote.textContent = shippingReady ? "" : "Choisissez d'abord un mode de livraison.";
             return;
         }
 
         setCheckoutSubmitLabel("Payer avec Stripe");
-        checkoutElements.submitButton.disabled = stripeCheckoutState.canConfirm === false;
+        checkoutElements.submitButton.disabled = !shippingReady || stripeCheckoutState.canConfirm === false;
         checkoutElements.stripeNote.textContent = "";
     }
 
@@ -990,22 +1007,6 @@
         if (checkoutElements?.submitButton) {
             checkoutElements.submitButton.textContent = label;
         }
-    }
-
-    function collectCheckoutCustomer() {
-        if (!checkoutElements?.form) return null;
-
-        const formData = new FormData(checkoutElements.form);
-        return {
-            firstName: clean(formData.get("firstName")),
-            lastName: clean(formData.get("lastName")),
-            email: clean(formData.get("email")),
-            phone: clean(formData.get("phone")),
-            addressLine1: clean(formData.get("addressLine1")),
-            postalCode: clean(formData.get("postalCode")),
-            city: clean(formData.get("city")),
-            customerNote: clean(formData.get("customerNote"))
-        };
     }
 
     function hasCompleteCheckoutCustomer(customer) {
@@ -1310,7 +1311,8 @@
 
         const items = loadCart();
         const customer = collectCheckoutCustomer();
-        if (!items.length || !hasCompleteCheckoutCustomer(customer)) {
+        const shippingOptionId = getSelectedShippingOptionId();
+        if (!items.length || !hasCompleteCheckoutCustomer(customer) || !shippingOptionId || checkoutShippingState.loading) {
             checkoutElements.stripeNote.textContent = "";
             return;
         }
@@ -1328,7 +1330,7 @@
         checkoutElements.feedback.textContent = "Chargement des moyens de paiement Stripe...";
 
         try {
-            const remoteSession = await createStripeBackendSession(items, customer);
+            const remoteSession = await createStripeBackendSession(items, customer, shippingOptionId);
             const pendingSession = {
                 orderNumber: remoteSession.orderNumber,
                 invoiceNumber: remoteSession.invoiceNumber,
