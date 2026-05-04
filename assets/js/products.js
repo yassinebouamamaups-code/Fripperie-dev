@@ -25,6 +25,7 @@
     let stripeCheckoutState = null;
     let stripeMountingSignature = "";
     let stripeAutofillCheckTimer = 0;
+    let checkoutShippingRequestId = 0;
     let checkoutShippingState = {
         options: [],
         selectedOptionId: "",
@@ -799,6 +800,7 @@
         if (!items.length) return;
 
         const customer = collectCheckoutCustomer(false);
+        const requestId = ++checkoutShippingRequestId;
         checkoutShippingState.loading = true;
         checkoutShippingState.error = "";
         renderShippingOptions();
@@ -825,6 +827,10 @@
                 throw new Error(payload?.error?.message || "Impossible de charger les modes de livraison.");
             }
 
+            if (requestId !== checkoutShippingRequestId) {
+                return;
+            }
+
             checkoutShippingState.options = Array.isArray(payload.options) ? payload.options : [];
             if (!checkoutShippingState.options.length) {
                 throw new Error("Aucun mode de livraison disponible pour cette adresse.");
@@ -835,10 +841,16 @@
                 checkoutShippingState.selectedOptionId = checkoutShippingState.options[0].id;
             }
         } catch (error) {
+            if (requestId !== checkoutShippingRequestId) {
+                return;
+            }
             checkoutShippingState.options = [];
             checkoutShippingState.selectedOptionId = "";
             checkoutShippingState.error = error.message || "Impossible de charger les modes de livraison.";
         } finally {
+            if (requestId !== checkoutShippingRequestId) {
+                return;
+            }
             checkoutShippingState.loading = false;
             renderShippingOptions();
             renderCheckoutSummary(items);
@@ -850,9 +862,15 @@
             return;
         }
 
+        if (checkoutElements.submitButton) {
+            const isSubmitBlocked = checkoutShippingState.loading || Boolean(checkoutShippingState.error) || !checkoutShippingState.options.length;
+            checkoutElements.submitButton.disabled = isSubmitBlocked;
+        }
+
         if (checkoutShippingState.loading) {
-            checkoutElements.shippingOptions.innerHTML = "";
-            checkoutElements.shippingFeedback.textContent = "Chargement des modes de livraison...";
+            checkoutElements.shippingFeedback.textContent = checkoutShippingState.options.length
+                ? "Mise a jour des modes de livraison..."
+                : "Chargement des modes de livraison...";
             return;
         }
 
@@ -1506,6 +1524,10 @@
         }
 
         const selectedShippingOptionId = getSelectedShippingOptionId();
+        if (checkoutShippingState.loading) {
+            checkoutElements.feedback.textContent = "Patiente un instant, les modes de livraison sont en cours de mise a jour.";
+            return;
+        }
         if (!selectedShippingOptionId) {
             checkoutElements.feedback.textContent = "Choisissez un mode de livraison.";
             return;
