@@ -1049,6 +1049,7 @@
         const isPayPal = method?.id === "paypal";
         const customerReady = hasValidCheckoutCustomerDetails();
         const shippingReady = isShippingSelectionComplete();
+        const stripeRefreshing = isStripe && Boolean(stripeMountingSignature);
         const shouldShowStripePanel = customerReady && isStripe;
         checkoutElements.paymentMethods.querySelectorAll(".payment-method").forEach((card) => {
             const input = card.querySelector("input[name='paymentMethod']");
@@ -1078,6 +1079,13 @@
             setCheckoutSubmitLabel("Valider et payer");
             checkoutElements.submitButton.disabled = !shippingReady;
             checkoutElements.stripeNote.textContent = "";
+            return;
+        }
+
+        if (stripeRefreshing) {
+            setCheckoutSubmitLabel("Actualisation Stripe...");
+            checkoutElements.submitButton.disabled = true;
+            checkoutElements.stripeNote.textContent = "Le total Stripe est en cours de mise a jour.";
             return;
         }
 
@@ -1322,11 +1330,7 @@
     function resetStripeCheckoutState() {
         window.clearTimeout(stripeAutofillCheckTimer);
         stripeAutofillCheckTimer = 0;
-        if (stripeCheckoutState?.paymentElement?.destroy) {
-            stripeCheckoutState.paymentElement.destroy();
-        } else if (stripeCheckoutState?.paymentElement?.unmount) {
-            stripeCheckoutState.paymentElement.unmount();
-        }
+        destroyStripeCheckoutState(stripeCheckoutState);
 
         stripeCheckoutState = null;
         stripeMountingSignature = "";
@@ -1335,6 +1339,18 @@
         }
         if (checkoutElements?.stripeNote) {
             checkoutElements.stripeNote.textContent = "";
+        }
+    }
+
+    function destroyStripeCheckoutState(state) {
+        if (!state) {
+            return;
+        }
+
+        if (state.paymentElement?.destroy) {
+            state.paymentElement.destroy();
+        } else if (state.paymentElement?.unmount) {
+            state.paymentElement.unmount();
         }
     }
 
@@ -1491,6 +1507,7 @@
     }
 
     async function mountStripePaymentElement(remoteSession, items, customer) {
+        const previousStripeState = stripeCheckoutState;
         const stripeLoader = await loadStripeSdk();
         const stripeConfig = await ensureStripeClientConfig();
         const stripe = stripeLoader(stripeConfig.publishableKey, {
@@ -1507,6 +1524,7 @@
             }
         });
 
+        destroyStripeCheckoutState(previousStripeState);
         checkoutElements.stripeMount.innerHTML = "";
 
         const paymentElement = checkout.createPaymentElement({
@@ -1539,6 +1557,7 @@
             });
         }
 
+        stripeMountingSignature = "";
         checkoutElements.stripeNote.textContent = "";
         syncCheckoutPaymentUi();
     }
@@ -1562,12 +1581,11 @@
             return;
         }
 
-        if (stripeCheckoutState?.signature && stripeCheckoutState.signature !== signature) {
-            resetStripeCheckoutState();
-        }
-
         stripeMountingSignature = signature;
-        checkoutElements.feedback.textContent = "Chargement des moyens de paiement Stripe...";
+        checkoutElements.feedback.textContent = stripeCheckoutState?.signature
+            ? "Actualisation du total Stripe..."
+            : "Chargement des moyens de paiement Stripe...";
+        syncCheckoutPaymentUi();
 
         try {
             const remoteSession = await createStripeBackendSession(items, customer, shippingOptionId, selectedServicePoint);
@@ -1586,6 +1604,7 @@
         } catch (error) {
             stripeMountingSignature = "";
             checkoutElements.feedback.textContent = error.message || "Impossible de charger Stripe.";
+            syncCheckoutPaymentUi();
         }
     }
 
@@ -1816,8 +1835,11 @@
 
             try {
                 if (!stripeCheckoutState || stripeCheckoutState.signature !== signature) {
-                    resetStripeCheckoutState();
-                    checkoutElements.feedback.textContent = "Pr\u00e9paration du paiement Stripe...";
+                    stripeMountingSignature = signature;
+                    checkoutElements.feedback.textContent = stripeCheckoutState
+                        ? "Actualisation du total Stripe..."
+                        : "Pr\u00e9paration du paiement Stripe...";
+                    syncCheckoutPaymentUi();
 
                     const remoteSession = await createStripeBackendSession(items, customer, selectedShippingOptionId, selectedServicePoint);
                     const pendingSession = {
