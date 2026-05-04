@@ -25,6 +25,13 @@
     let stripeCheckoutState = null;
     let stripeMountingSignature = "";
     let stripeAutofillCheckTimer = 0;
+    let checkoutShippingState = {
+        options: [],
+        selectedOptionId: "",
+        loading: false,
+        error: ""
+    };
+    let checkoutShippingUpdateTimer = 0;
 
     function resolveCheckoutConfig(customConfig) {
         const seller = customConfig.seller || {};
@@ -654,6 +661,11 @@
                         </label>
                     </div>
                     <div class="checkout-methods" data-checkout-methods>
+                        <div class="checkout-shipping" data-checkout-shipping>
+                            <h3>Mode de livraison</h3>
+                            <div class="checkout-shipping__list" data-shipping-options></div>
+                            <p class="checkout-shipping__feedback" data-shipping-feedback></p>
+                        </div>
                         <h3>Mode de paiement</h3>
                         <div class="checkout-methods__list" data-payment-methods></div>
                     </div>
@@ -666,6 +678,14 @@
                     <div class="checkout-summary">
                         <h3>R&eacute;capitulatif</h3>
                         <div class="checkout-summary__items" data-checkout-items></div>
+                        <div class="checkout-summary__line">
+                            <span>Sous-total</span>
+                            <strong data-checkout-subtotal>0,00 EUR</strong>
+                        </div>
+                        <div class="checkout-summary__line">
+                            <span>Livraison</span>
+                            <strong data-checkout-shipping-total>A calculer</strong>
+                        </div>
                         <div class="checkout-summary__total">
                             <span>Total</span>
                             <strong data-checkout-total>0,00 EUR</strong>
@@ -698,11 +718,16 @@
             panel,
             form: panel.querySelector("[data-checkout-form]"),
             methodsSection: panel.querySelector("[data-checkout-methods]"),
+            shippingSection: panel.querySelector("[data-checkout-shipping]"),
+            shippingOptions: panel.querySelector("[data-shipping-options]"),
+            shippingFeedback: panel.querySelector("[data-shipping-feedback]"),
             paymentMethods: panel.querySelector("[data-payment-methods]"),
             stripeSection: panel.querySelector("[data-checkout-stripe]"),
             stripeMount: panel.querySelector("[data-stripe-payment-element]"),
             stripeNote: panel.querySelector("[data-stripe-payment-note]"),
             items: panel.querySelector("[data-checkout-items]"),
+            subtotal: panel.querySelector("[data-checkout-subtotal]"),
+            shippingTotal: panel.querySelector("[data-checkout-shipping-total]"),
             total: panel.querySelector("[data-checkout-total]"),
             feedback: panel.querySelector("[data-checkout-feedback]"),
             success: panel.querySelector("[data-checkout-success]"),
@@ -746,9 +771,137 @@
         `).join("");
     }
 
+    function resetCheckoutShippingState() {
+        window.clearTimeout(checkoutShippingUpdateTimer);
+        checkoutShippingUpdateTimer = 0;
+        checkoutShippingState = {
+            options: [],
+            selectedOptionId: "",
+            loading: false,
+            error: ""
+        };
+        renderShippingOptions();
+    }
+
+    function scheduleCheckoutShippingRefresh() {
+        window.clearTimeout(checkoutShippingUpdateTimer);
+        checkoutShippingUpdateTimer = window.setTimeout(() => {
+            updateCheckoutShippingOptions();
+        }, 250);
+    }
+
+    async function updateCheckoutShippingOptions() {
+        if (!checkoutElements?.form || !shopConfig.backend.baseUrl) {
+            return;
+        }
+
+        const items = loadCart();
+        if (!items.length) return;
+
+        const customer = collectCheckoutCustomer(false);
+        checkoutShippingState.loading = true;
+        checkoutShippingState.error = "";
+        renderShippingOptions();
+
+        try {
+            const response = await fetch(`${shopConfig.backend.baseUrl}/api/shipping/options`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    cart: items.map((item) => ({
+                        id: item.id,
+                        quantity: 1,
+                        price: item.price,
+                        unitAmount: parsePrice(item.price)
+                    })),
+                    customer
+                })
+            });
+
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload?.error?.message || "Impossible de charger les modes de livraison.");
+            }
+
+            checkoutShippingState.options = Array.isArray(payload.options) ? payload.options : [];
+            if (!checkoutShippingState.options.length) {
+                throw new Error("Aucun mode de livraison disponible pour cette adresse.");
+            }
+
+            const stillExists = checkoutShippingState.options.some((option) => option.id === checkoutShippingState.selectedOptionId);
+            if (!stillExists) {
+                checkoutShippingState.selectedOptionId = checkoutShippingState.options[0].id;
+            }
+        } catch (error) {
+            checkoutShippingState.options = [];
+            checkoutShippingState.selectedOptionId = "";
+            checkoutShippingState.error = error.message || "Impossible de charger les modes de livraison.";
+        } finally {
+            checkoutShippingState.loading = false;
+            renderShippingOptions();
+            renderCheckoutSummary(items);
+        }
+    }
+
+    function renderShippingOptions() {
+        if (!checkoutElements?.shippingOptions || !checkoutElements?.shippingFeedback) {
+            return;
+        }
+
+        if (checkoutShippingState.loading) {
+            checkoutElements.shippingOptions.innerHTML = "";
+            checkoutElements.shippingFeedback.textContent = "Chargement des modes de livraison...";
+            return;
+        }
+
+        if (checkoutShippingState.error) {
+            checkoutElements.shippingOptions.innerHTML = "";
+            checkoutElements.shippingFeedback.textContent = checkoutShippingState.error;
+            return;
+        }
+
+        const options = checkoutShippingState.options;
+        checkoutElements.shippingFeedback.textContent = "";
+        checkoutElements.shippingOptions.innerHTML = options.map((option, index) => `
+            <label class="shipping-option">
+                <input type="radio" name="shippingOption" value="${escapeAttribute(option.id)}" ${option.id === checkoutShippingState.selectedOptionId || (!checkoutShippingState.selectedOptionId && index === 0) ? "checked" : ""}>
+                <span class="shipping-option__content">
+                    <span class="shipping-option__main">
+                        <strong>${escapeHtml(option.label)}</strong>
+                        ${option.description ? `<small>${escapeHtml(option.description)}</small>` : ""}
+                        ${option.estimatedLabel ? `<small>${escapeHtml(option.estimatedLabel)}</small>` : ""}
+                    </span>
+                    <span class="shipping-option__price">${option.shippingAmount <= 0 ? "Offerte" : escapeHtml(formatPrice(option.shippingAmount))}</span>
+                </span>
+            </label>
+        `).join("");
+    }
+
+    function getSelectedShippingOptionId() {
+        return checkoutElements?.form?.querySelector("input[name='shippingOption']:checked")?.value
+            || checkoutShippingState.selectedOptionId
+            || "";
+    }
+
+    function getSelectedShippingOption() {
+        const selectedId = getSelectedShippingOptionId();
+        return checkoutShippingState.options.find((option) => option.id === selectedId) || null;
+    }
+
     function handleCheckoutFormChange(event) {
         if (event.target instanceof HTMLInputElement && event.target.name === "paymentMethod") {
             syncCheckoutPaymentUi();
+        }
+
+        if (event.target instanceof HTMLInputElement && event.target.name === "shippingOption") {
+            checkoutShippingState.selectedOptionId = clean(event.target.value);
+            renderCheckoutSummary(loadCart());
+        }
+
+        if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+            scheduleCheckoutShippingRefresh();
         }
 
         if (getSelectedPaymentMethodId() === "stripe") {
@@ -874,8 +1027,38 @@
                 addressLine1: clean(customer.addressLine1),
                 postalCode: clean(customer.postalCode),
                 city: clean(customer.city)
-            }
+            },
+            shippingOptionId: getSelectedShippingOptionId()
         });
+    }
+
+    function collectCheckoutCustomer(includeNote = true) {
+        if (!checkoutElements?.form) {
+            return {
+                firstName: "",
+                lastName: "",
+                email: "",
+                phone: "",
+                addressLine1: "",
+                postalCode: "",
+                city: "",
+                country: "FR",
+                customerNote: ""
+            };
+        }
+
+        const formData = new FormData(checkoutElements.form);
+        return {
+            firstName: clean(formData.get("firstName")),
+            lastName: clean(formData.get("lastName")),
+            email: clean(formData.get("email")),
+            phone: clean(formData.get("phone")),
+            addressLine1: clean(formData.get("addressLine1")),
+            postalCode: clean(formData.get("postalCode")),
+            city: clean(formData.get("city")),
+            country: "FR",
+            customerNote: includeNote ? clean(formData.get("customerNote")) : ""
+        };
     }
 
     function resetStripeCheckoutState() {
@@ -1223,7 +1406,10 @@
     }
 
     function renderCheckoutSummary(items) {
-        const total = items.reduce((sum, item) => sum + parsePrice(item.price), 0);
+        const subtotal = items.reduce((sum, item) => sum + parsePrice(item.price), 0);
+        const shippingOption = getSelectedShippingOption();
+        const shippingAmount = shippingOption ? Number(shippingOption.shippingAmount || 0) : 0;
+        const total = subtotal + shippingAmount;
         checkoutElements.items.innerHTML = items.map((item) => `
             <article class="checkout-summary__item">
                 <div>
@@ -1234,6 +1420,14 @@
                 <span>${escapeHtml(displayPrice(item.price))}</span>
             </article>
         `).join("");
+        if (checkoutElements.subtotal) {
+            checkoutElements.subtotal.textContent = formatPrice(subtotal);
+        }
+        if (checkoutElements.shippingTotal) {
+            checkoutElements.shippingTotal.textContent = shippingOption
+                ? (shippingAmount <= 0 ? "Offerte" : formatPrice(shippingAmount))
+                : "A calculer";
+        }
         checkoutElements.total.textContent = formatPrice(total);
     }
 
@@ -1255,12 +1449,14 @@
 
         currentOrder = null;
         resetStripeCheckoutState();
+        resetCheckoutShippingState();
         checkoutElements.feedback.textContent = "";
         checkoutElements.success.hidden = true;
         checkoutElements.form.hidden = false;
         checkoutElements.payNow.href = "#";
         checkoutElements.payNow.setAttribute("aria-disabled", "true");
         renderCheckoutSummary(items);
+        updateCheckoutShippingOptions();
         syncCheckoutPaymentUi();
         document.body.classList.add("checkout-is-open");
         queueStripeAutofillRefresh();
@@ -1300,11 +1496,18 @@
             addressLine1: clean(formData.get("addressLine1")),
             postalCode: clean(formData.get("postalCode")),
             city: clean(formData.get("city")),
+            country: "FR",
             customerNote: clean(formData.get("customerNote"))
         };
 
         if (!customer.firstName || !customer.lastName || !customer.email || !customer.phone || !customer.addressLine1 || !customer.postalCode || !customer.city) {
             checkoutElements.feedback.textContent = "Merci de compl\u00e9ter toutes les informations client.";
+            return;
+        }
+
+        const selectedShippingOptionId = getSelectedShippingOptionId();
+        if (!selectedShippingOptionId) {
+            checkoutElements.feedback.textContent = "Choisissez un mode de livraison.";
             return;
         }
 
@@ -1314,7 +1517,7 @@
             submitButton.disabled = true;
 
             try {
-                const remoteOrder = await createPayPalBackendOrder(items, customer);
+                const remoteOrder = await createPayPalBackendOrder(items, customer, selectedShippingOptionId);
                 const pendingOrder = {
                     orderNumber: remoteOrder.orderNumber,
                     invoiceNumber: remoteOrder.invoiceNumber,
@@ -1346,7 +1549,7 @@
                     resetStripeCheckoutState();
                     checkoutElements.feedback.textContent = "Pr\u00e9paration du paiement Stripe...";
 
-                    const remoteSession = await createStripeBackendSession(items, customer);
+                    const remoteSession = await createStripeBackendSession(items, customer, selectedShippingOptionId);
                     const pendingSession = {
                         orderNumber: remoteSession.orderNumber,
                         invoiceNumber: remoteSession.invoiceNumber,
@@ -1425,7 +1628,7 @@
         closeCart();
     }
 
-    async function createPayPalBackendOrder(items, customer) {
+    async function createPayPalBackendOrder(items, customer, shippingOptionId) {
         const response = await fetch(`${shopConfig.backend.baseUrl}/api/checkout/paypal/order`, {
             method: "POST",
             headers: {
@@ -1442,7 +1645,10 @@
                     price: item.price,
                     unitAmount: parsePrice(item.price)
                 })),
-                customer
+                customer,
+                shipping: {
+                    optionId: shippingOptionId
+                }
             })
         });
 
@@ -1454,7 +1660,7 @@
         return payload;
     }
 
-    async function createStripeBackendSession(items, customer) {
+    async function createStripeBackendSession(items, customer, shippingOptionId) {
         const response = await fetch(`${shopConfig.backend.baseUrl}/api/checkout/stripe/session`, {
             method: "POST",
             headers: {
@@ -1471,7 +1677,10 @@
                     price: item.price,
                     unitAmount: parsePrice(item.price)
                 })),
-                customer
+                customer,
+                shipping: {
+                    optionId: shippingOptionId
+                }
             })
         });
 
