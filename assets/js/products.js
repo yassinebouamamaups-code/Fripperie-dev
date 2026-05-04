@@ -1083,9 +1083,9 @@
         }
 
         if (stripeRefreshing) {
-            setCheckoutSubmitLabel("Actualisation Stripe...");
+            setCheckoutSubmitLabel("Payer avec Stripe");
             checkoutElements.submitButton.disabled = true;
-            checkoutElements.stripeNote.textContent = "Le total Stripe est en cours de mise a jour.";
+            checkoutElements.stripeNote.textContent = "";
             return;
         }
 
@@ -1583,7 +1583,7 @@
 
         stripeMountingSignature = signature;
         checkoutElements.feedback.textContent = stripeCheckoutState?.signature
-            ? "Actualisation du total Stripe..."
+            ? ""
             : "Chargement des moyens de paiement Stripe...";
         syncCheckoutPaymentUi();
 
@@ -1837,7 +1837,7 @@
                 if (!stripeCheckoutState || stripeCheckoutState.signature !== signature) {
                     stripeMountingSignature = signature;
                     checkoutElements.feedback.textContent = stripeCheckoutState
-                        ? "Actualisation du total Stripe..."
+                        ? ""
                         : "Pr\u00e9paration du paiement Stripe...";
                     syncCheckoutPaymentUi();
 
