@@ -10,7 +10,9 @@
     const STRIPE_PENDING_STORAGE_KEY = "laGoutteDeMerPendingStripeSession";
     const DEFAULT_IMAGE_FALLBACK = "";
     const status = document.querySelector("[data-products-status]");
-    const sourceUrl = window.PRODUCTS_SOURCE_URL || "https://docs.google.com/spreadsheets/d/1yZVWg-Ypzd2VtFE4tVf0XmVVvTqzgFu8TTq4KAyvsb0/export?format=csv&gid=1348794459";
+    const sourceUrl = clean(window.RENDER_RUNTIME_CONFIG?.catalogSourceUrl)
+        || clean(window.PRODUCTS_SOURCE_URL)
+        || "https://docs.google.com/spreadsheets/d/1yZVWg-Ypzd2VtFE4tVf0XmVVvTqzgFu8TTq4KAyvsb0/export?format=csv&gid=1348794459";
     const cacheSafeSourceUrl = sourceUrl.includes("docs.google.com")
         ? `${sourceUrl}${sourceUrl.includes("?") ? "&" : "?"}_=${Date.now()}`
         : sourceUrl;
