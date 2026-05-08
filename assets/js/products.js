@@ -28,6 +28,7 @@
     let stripeMountingSignature = "";
     let stripeAutofillCheckTimer = 0;
     let checkoutShippingRequestId = 0;
+    let stripeCheckoutMode = "custom";
     let sendcloudServicePointSdkPromise = null;
     let checkoutShippingState = {
         options: [],
@@ -1052,7 +1053,7 @@
         const customerReady = hasValidCheckoutCustomerDetails();
         const shippingReady = isShippingSelectionComplete();
         const stripeRefreshing = isStripe && Boolean(stripeMountingSignature);
-        const shouldShowStripePanel = customerReady && isStripe;
+        const shouldShowStripePanel = customerReady && isStripe && stripeCheckoutMode !== "redirect";
         checkoutElements.paymentMethods.querySelectorAll(".payment-method").forEach((card) => {
             const input = card.querySelector("input[name='paymentMethod']");
             card.classList.toggle("payment-method--active", Boolean(input?.checked));
@@ -1079,6 +1080,13 @@
 
         if (!isStripe) {
             setCheckoutSubmitLabel("Valider et payer");
+            checkoutElements.submitButton.disabled = !shippingReady;
+            checkoutElements.stripeNote.textContent = "";
+            return;
+        }
+
+        if (stripeCheckoutMode === "redirect") {
+            setCheckoutSubmitLabel("Payer avec Stripe");
             checkoutElements.submitButton.disabled = !shippingReady;
             checkoutElements.stripeNote.textContent = "";
             return;
@@ -1358,6 +1366,7 @@
 
     async function ensureStripeClientConfig() {
         if (stripeClientConfig?.publishableKey) {
+            stripeCheckoutMode = clean(stripeClientConfig?.checkoutMode).toLowerCase() === "redirect" ? "redirect" : "custom";
             return stripeClientConfig;
         }
 
@@ -1368,6 +1377,7 @@
         }
 
         stripeClientConfig = payload;
+        stripeCheckoutMode = clean(payload?.checkoutMode).toLowerCase() === "redirect" ? "redirect" : "custom";
         return stripeClientConfig;
     }
 
@@ -1573,7 +1583,7 @@
         if (clean(stripeConfig?.checkoutMode).toLowerCase() === "redirect") {
             stripeMountingSignature = "";
             checkoutElements.stripeMount.innerHTML = "";
-            checkoutElements.stripeNote.textContent = "Le paiement Stripe s'ouvrira sur une page securisee Stripe apres validation.";
+            checkoutElements.stripeNote.textContent = "";
             syncCheckoutPaymentUi();
             return;
         }
