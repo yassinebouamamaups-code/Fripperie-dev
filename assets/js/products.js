@@ -1070,6 +1070,19 @@
         }
     }
 
+    function getShippingOptionDisplayOrder(option) {
+        const optionId = clean(option?.id);
+        const priorityMap = {
+            "colissimo-relay": 0,
+            "mondial-relay": 1,
+            "chronopost-relay": 2,
+            "colissimo-home": 3,
+            "chronopost-home": 4
+        };
+
+        return priorityMap[optionId] ?? 99;
+    }
+
     function renderShippingOptions() {
         if (!checkoutElements?.shippingOptions || !checkoutElements?.shippingFeedback) {
             return;
@@ -1093,7 +1106,9 @@
             return;
         }
 
-        const options = checkoutShippingState.options;
+        const options = [...checkoutShippingState.options].sort((left, right) => {
+            return getShippingOptionDisplayOrder(left) - getShippingOptionDisplayOrder(right);
+        });
         checkoutElements.shippingFeedback.textContent = "";
         checkoutElements.shippingOptions.innerHTML = options.map((option, index) => `
             <label class="shipping-option">
@@ -1101,7 +1116,7 @@
                 <span class="shipping-option__content">
                     <span class="shipping-option__main">
                         <strong>${escapeHtml(option.label)}</strong>
-                        ${option.description ? `<small>${escapeHtml(option.description)}</small>` : ""}
+                        ${option.description && !option.requiresServicePoint ? `<small>${escapeHtml(option.description)}</small>` : ""}
                         ${option.estimatedLabel ? `<small>${escapeHtml(option.estimatedLabel)}</small>` : ""}
                         ${option.requiresServicePoint ? renderServicePointSelectionMarkup(option) : ""}
                     </span>
@@ -1139,12 +1154,7 @@
                         <strong>${escapeHtml(selectedServicePoint.name || "Point relais selectionne")}</strong>
                         <small>${escapeHtml(formatServicePointAddress(selectedServicePoint))}</small>
                     </span>
-                ` : `
-                    <span class="shipping-option__relay-summary">
-                        <strong>Aucun point relais choisi</strong>
-                        <small>Sélectionnez un point de retrait avant de payer.</small>
-                    </span>
-                `}
+                ` : ""}
                 <span class="shipping-option__relay-actions">
                     <button
                         type="button"
